@@ -1,0 +1,123 @@
+name: Mia Sara Ultimate Android APK
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-android:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    env:
+      ORG_GRADLE_PROJECT_rnllamaBuildFromSource: 'true'
+      RNLLAMA_SKIP_POSTINSTALL: '1'
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Free build space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /opt/ghc /opt/hostedtoolcache
+          df -h /
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.21.0'
+
+      - name: Install Yarn
+        run: npm install -g yarn
+
+      - name: Install dependencies
+        run: yarn install
+
+      - name: Configure AI variants
+        run: |
+          VARIANTS=$(node scripts/verify-android-payload.js --print-variants)
+          echo "ORG_GRADLE_PROJECT_rnllamaVariants=$VARIANTS" >> "$GITHUB_ENV"
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Hexagon SDK
+        uses: ./.github/actions/setup-hexagon-sdk
+
+      - name: Create CI configuration
+        run: |
+          cat > android/app/google-services.json << 'EOF'
+          {
+            "project_info": {
+              "project_number": "000000000000",
+              "project_id": "dummy-project-for-ci",
+              "storage_bucket": "dummy-project-for-ci.appspot.com"
+            },
+            "client": [{
+              "client_info": {
+                "mobilesdk_app_id": "1:000000000000:android:0000000000000000",
+                "android_client_info": {
+                  "package_name": "com.pocketpalai"
+                }
+              },
+              "api_key": [{
+                "current_key": "dummy-api-key-for-ci-builds"
+              }]
+            }]
+          }
+          EOF
+
+          cat > .env << 'EOF'
+          FIREBASE_FUNCTIONS_URL=https://dummy-firebase-url.com
+          SUPABASE_URL=https://dummy-supabase-url.supabase.co
+          SUPABASE_ANON_KEY=dummy-anon-key-for-ci-builds
+          PALSHUB_API_BASE_URL=https://dummy-palshub-api.com
+          APP_URL=pocketpal://app
+          ENABLE_PALSHUB_INTEGRATION=false
+          ENABLE_AUTHENTICATION=false
+          ENABLE_OFFLINE_MODE=true
+          GOOGLE_IOS_CLIENT_ID=dummy-ios-client-id.apps.googleusercontent.com
+          GOOGLE_WEB_CLIENT_ID=dummy-web-client-id.apps.googleusercontent.com
+          EOF
+
+      - name: Generate temporary signing key
+        working-directory: android/app
+        run: |
+          keytool -genkeypair \
+            -storetype PKCS12 \
+            -keystore pocketpal-release-key.keystore \
+            -alias pocketpal_key_alias \
+            -keyalg RSA \
+            -keysize 2048 \
+            -validity 10000 \
+            -storepass dummy-ci-password \
+            -keypass dummy-ci-password \
+            -dname "CN=Mia Sara CI, OU=Personal, O=Mia Sara, L=CI, S=CI, C=MY"
+
+      - name: Build Android APK
+        working-directory: android
+        env:
+          APP_RELEASE_STORE_PASSWORD: dummy-ci-password
+          APP_RELEASE_KEY_PASSWORD: dummy-ci-password
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleProdRelease
+
+      - name: Verify Android payload
+        run: |
+          node scripts/verify-android-payload.js \
+            --apk android/app/build/outputs/apk/prod/release/app-prod-release.apk \
+            --report payload-report.txt
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mia-sara-ultimate-apk
+          path: android/app/build/outputs/apk/prod/release/app-prod-release.apk
+          if-no-files-found: error
